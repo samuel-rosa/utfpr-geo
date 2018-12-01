@@ -1,0 +1,160 @@
+---
+title: "Pré-processamento de dados sensoriados remotamente"
+subtitle: "Correção atmosférica"
+author: "Prof. Dr. Alessandro Samuel-Rosa"
+date: "`r Sys.Date()`"
+bibliography: biblio.bib
+csl: abnt.csl
+link-citations: yes
+github-repo: samuel-rosa/utfpr-geo
+output: bookdown::html_document2
+---
+nocite: | 
+@Chavez1988, @Chavez1989, @GuertlerEtAl2005, @Mather2004, @Schowengerdt2007
+...
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE)
+
+# Carregar pacotes necessários
+library(magrittr)
+library(glue)
+library(raster)
+
+# Se necessário, descompactar os arquivos das imagens de satélite
+files <- list.files("../data/raster/", pattern = ".tif$")
+if (length(files) == 0) {
+  files <- list.files("../data/raster/", pattern = ".tif.zip")
+  files <- glue::glue("../data/raster/{files}")
+  for (i in 1:length(files)) {
+    unzip(files[i], exdir = "../data/raster/")
+  }
+}
+
+# Se necessário, reamostrar a banda 6 do sensor TM do satélite Landsat 5 para 30 m
+files <- list.files("../data/raster/", pattern = ".tif$")
+files <- glue::glue("../data/raster/{files}")
+if (file.size(files[6]) < 4000000) {
+  tmpdir <- tempdir()
+  glue::glue("cp {files[6]} {tmpdir}") %>% system()
+  tmpfile <- list.files(tmpdir, pattern = ".tif$")
+  # Informações sobre o gdal_translate em https://www.gdal.org/gdal_translate.html
+  glue::glue("gdal_translate -tr 30 30 -r nearest {tmpdir}/{tmpfile} {files[6]}") %>% system()
+  glue::glue("rm -r {tmpdir}") %>% system()
+}
+```
+
+```{r}
+files <- list.files("../data/raster/", pattern = ".tif$")
+files <- glue::glue("../data/raster/{files}")
+landsat <- 
+  files %>% 
+  as.list() %>%
+  raster::stack() %T>% # O operador %T>%, chamado 'tee', permite a impressão do resultado
+  print()
+```
+
+```{r}
+ext <- raster::extent(c(229790, 238745, 6749875, 6758852))
+raster::plotRGB(landsat, r = 3, g = 2, b = 1, ext = ext)
+```
+
+# Métodos baseados em imagem
+
+```{r}
+# http://www.gisagmaps.com/landsat-8-atco-guide/
+# http://www.gisagmaps.com/atco-guide/
+# Dark object subtraction is not atmospheric correction. It is image normalization.
+# https://gis.stackexchange.com/a/206182/28044
+library(landsat)
+```
+
+```{r}
+# One approach to choosing a Starting Haze Value is to take the lowest DN value
+# with a frequency greater than some predetermined threshold, in this case 1000 pixels.
+# this is used as Lhaze in the radiocorr function.
+# we avoid zero because this it is the value of the borders and could be an optimiztic estimate.
+library(parallel)
+dos_param <- data.frame(band = 1:7, shv = NA_real_)
+dos_param$shv <- 
+  parallel::mclapply(X = 1:7, FUN = function (i) {
+    tmp <- landsat[[i]] %>% values() %>% table()
+    tmp <- names(tmp)[tmp > 1000] %>% as.numeric()
+    tmp[tmp > 0] %>% min()
+  },
+  mc.cores = 3) %>% 
+  unlist() %T>% 
+  print()
+```
+
+```{r}
+dos_param$gain <- c(0.668706, 1.31702, 1.03988, 0.872588, 0.119882, 0.0551576, 0.0652941)
+dos_param$bias <- c(-1.52,      -2.84,   -1.17,    -1.51,    -0.37,    1.2378,     -0.15)
+dos_param$edist <- ESdist("1986-01-06")
+# library(maptools)
+# crds <- landsat %>% bbox() 
+# crds <- crds[, 1] + (crds %>% apply(MARGIN = 1, FUN = diff) / 2) %>% matrix(ncol = 2)
+# crds <- SpatialPoints(crds, proj4string = proj4string(landsat) %>% CRS)
+# crds <- spTransform(crds, CRSobj = CRS("+init=epsg:4326"))
+# dos_param$sunelev <- solarpos(crds = crds, dateTime = as.POSIXct("1986-01-06 12:58:18"))[2]
+dos_param$sunelev <- 52.67848915 # https://earthexplorer.usgs.gov/
+dos_param$Esun <- c(1958, 1827, 1551, 1036, 214.9, NA_real_, 80.65) # https://landsat.usgs.gov/esun
+```
+
+Nível de cinza do objeto escuro | Condição atmosférica | Modelo relativo de espalhamento
+------------------------------- | -------------------- | -------------------------------
+$\leq$ 55                       | Muito limpa          | $\lambda$^-4^
+56--75                          | Limpa                | $\lambda$^-2^
+76--95                          | Moderada             | $\lambda$^-1^
+96--115                         | Com bruma            | $\lambda$^-0,7^
+$>$ 115                         | Com muita bruma      | $\lambda$^-0,5^
+
+```{r}
+dos <- 
+  landsat::DOS(
+    sat = 5, SHV = 55, SHV.band = 1, Grescale = dos_param$gain[-6],
+    Brescale = dos_param$bias[-6], edist = dos_param$edist[-6], 
+    sunelev = dos_param$sunelev[-6])$DNfinal.mean
+dos <- rbind(dos, dos[6, ])
+dos[6, ] <- NA_real_
+rownames(dos) <- glue::glue("band{1:7}")
+dos
+```
+
+```{r}
+dos <- dos[, "coef-4"]
+landsat_dos <- 
+  parallel::mclapply(1:7, function (i) {
+    if (i == 6) {
+      landsat[[i]]
+    } else {
+      res <-
+        landsat[[i]] %>% 
+        as("SpatialGridDataFrame") %>% 
+        landsat::radiocorr(
+          Grescale = dos_param$gain[i], Brescale = dos_param$bias[i], 
+          edist = dos_param$edist[i], sunelev = dos_param$sunelev[i], 
+          Esun = dos_param$Esun[i], Lhaze = dos[i], method = "DOS") %>% 
+        raster::raster()
+      values(res)[values(res) < 0] <- 0
+      res
+    }
+  }, mc.cores = 3) %>% 
+  raster::stack() %T>% 
+  print()
+```
+
+```{r}
+landsat_dos[[-6]] %>% 
+  raster::plot(
+    col = gray.colors(n = 256, start = 0, end = 1, gamma = 2.2, alpha = NULL), 
+    main = glue::glue("Banda {c(1:5, 7)}"))
+```
+
+```{r}
+par(mfrow = c(1, 2))
+landsat %>% raster::plotRGB(r = 3, g = 2, b = 1, stretch = "lin")
+landsat_dos %>% raster::plotRGB(r = 3, g = 2, b = 1, stretch = "lin")
+```
+
+## Bibliografia consultada
