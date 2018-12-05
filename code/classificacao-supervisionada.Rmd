@@ -1,0 +1,114 @@
+---
+title: "Reconhecimento de padrões e classificação de dados sensoriados remotamente"
+subtitle: "Classificação supervisionada"
+author: "Prof. Dr. Alessandro Samuel-Rosa"
+date: "`r Sys.Date()`"
+bibliography: biblio.bib
+csl: abnt.csl
+link-citations: yes
+github-repo: samuel-rosa/utfpr-geo
+output: bookdown::html_document2
+nocite: | 
+  @Mather2004, @Schowengerdt2007
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+loadPackage <-
+  function (x) {
+    if (!require(package = x, character.only = TRUE)) {
+      message(glue::glue("Installing package {x} and its dependencies..."))
+      install.packages(pkgs = x, dependencies = TRUE)
+    }
+    library(package = x, character.only = TRUE)
+  }
+```
+
+```{r pacotes}
+# Instalar e carregar os pacotes necessários
+loadPackage("magrittr")
+loadPackage("glue")
+loadPackage("raster")
+loadPackage("mapedit")
+```
+
+
+```{r, include=FALSE}
+# Se necessário, descompactar os arquivos das imagens de satélite
+files <- list.files("../data/raster/", pattern = ".tif$")
+if (length(files) == 0) {
+  files <- list.files("../data/raster/", pattern = ".tif.zip")
+  files <- glue::glue("../data/raster/{files}")
+  for (i in 1:length(files)) {
+    unzip(files[i], exdir = "../data/raster/")
+  }
+}
+
+# Se necessário, reamostrar a banda 6 do sensor TM do satélite Landsat 5 para 30 m
+files <- list.files("../data/raster/", pattern = ".tif$")
+files <- glue::glue("../data/raster/{files}")
+if (file.size(files[6]) < 4000000) {
+  tmpdir <- tempdir()
+  glue::glue("cp {files[6]} {tmpdir}") %>% system()
+  tmpfile <- list.files(tmpdir, pattern = ".tif$")
+  # Informações sobre o gdal_translate em https://www.gdal.org/gdal_translate.html
+  glue::glue("gdal_translate -tr 30 30 -r nearest {tmpdir}/{tmpfile} {files[6]}") %>% system()
+  glue::glue("rm -r {tmpdir}") %>% system()
+}
+```
+
+```{r}
+files <- list.files("../data/raster/", pattern = ".tif$")
+files <- glue::glue("../data/raster/{files}")
+landsat <- 
+  files %>% 
+  as.list() %>%
+  raster::stack() %T>% # O operador %T>%, chamado 'tee', permite a impressão do resultado
+  print()
+```
+
+```{r}
+ext <- raster::extent(c(229790, 238745, 6749875, 6758852))
+raster::plotRGB(landsat, r = 3, g = 2, b = 1, ext = ext, stretch = 'lin')
+```
+
+# Amostras de treinamento
+
+```{r}
+map <-
+  landsat %>% 
+  raster::crop(y = ext) %>% 
+  mapview::viewRGB(r = 4, g = 3, b = 2)
+if (!exists("floresta")) {
+  floresta <- mapedit::drawFeatures(map)
+  floresta$uso <- "floresta"
+  sf::write_sf(floresta, "../data/vector/floresta.shp")
+}
+if (!exists("cidade")) {
+  cidade <- mapedit::drawFeatures(map)
+  cidade$uso <- "cidade"
+  sf::write_sf(cidade, "../data/vector/cidade.shp")
+}
+if (!exists("agricultura")) {
+  agricultura <- mapedit::drawFeatures(map)
+  agricultura$uso <- "agricultura"
+  sf::write_sf(agricultura, "../data/vector/agricultura.shp")
+}
+if (!exists(agua)) {
+  agua <- mapedit::drawFeatures(map)
+  agua$uso <- "água"
+  sf::write_sf(agua, "../data/vector/agua.shp")
+}
+```
+
+```{r}
+uso_da_terra <- rbind(floresta, cidade, agricultura, agua)
+plot(uso_da_terra["uso"])
+```
+
+```{r}
+uso_da_terra <- 
+  cbind(uso_da_terra, raster::extract(landsat, uso_da_terra)) %T>%
+  print()
+```
+
