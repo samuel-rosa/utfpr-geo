@@ -8,13 +8,12 @@ csl: abnt.csl
 link-citations: yes
 github-repo: samuel-rosa/utfpr-geo
 output: bookdown::html_document2
----
 nocite: | 
-@Chavez1988, @Chavez1989, @GuertlerEtAl2005, @Mather2004, @Schowengerdt2007
-...
+  @Chavez1988, @Chavez1989, @GuertlerEtAl2005, @Mather2004, @Schowengerdt2007
+---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, eval = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
 
 # Carregar pacotes necessários
 library(magrittr)
