@@ -13,7 +13,7 @@ nocite: |
 ---
 
 ```{r setup}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, fig.asp = 1)
 loadPackage <-
   function (x) {
     if (!require(package = x, character.only = TRUE)) {
@@ -30,6 +30,9 @@ loadPackage("magrittr")
 loadPackage("glue")
 loadPackage("raster")
 loadPackage("mapedit")
+loadPackage("rpart")
+loadPackage("caret")
+loadPackage("fields")
 ```
 
 
@@ -68,6 +71,11 @@ landsat <-
 ```
 
 ```{r}
+names(landsat) <- gsub("LANDSAT_5_TM_19860106_223_080_L2_", "", names(landsat))
+```
+
+
+```{r}
 ext <- raster::extent(c(229790, 238745, 6749875, 6758852))
 raster::plotRGB(landsat, r = 3, g = 2, b = 1, ext = ext, stretch = 'lin')
 ```
@@ -79,31 +87,41 @@ map <-
   landsat %>% 
   raster::crop(y = ext) %>% 
   mapview::viewRGB(r = 4, g = 3, b = 2)
-if (!exists("floresta")) {
+if (!exists("floresta") && !file.exists("../data/vector/floresta.shp")) {
   floresta <- mapedit::drawFeatures(map)
   floresta$uso <- "floresta"
   sf::write_sf(floresta, "../data/vector/floresta.shp")
+} else {
+  floresta <- sf::read_sf("../data/vector/floresta.shp")
 }
-if (!exists("cidade")) {
+if (!exists("cidade") && !file.exists("../data/vector/cidade.shp")) {
   cidade <- mapedit::drawFeatures(map)
   cidade$uso <- "cidade"
   sf::write_sf(cidade, "../data/vector/cidade.shp")
+} else {
+  cidade <- sf::read_sf("../data/vector/cidade.shp")
 }
-if (!exists("agricultura")) {
+if (!exists("agricultura") && !file.exists("../data/vector/agricultura.shp")) {
   agricultura <- mapedit::drawFeatures(map)
   agricultura$uso <- "agricultura"
   sf::write_sf(agricultura, "../data/vector/agricultura.shp")
+} else {
+  agricultura <- sf::read_sf("../data/vector/agricultura.shp")
 }
-if (!exists(agua)) {
+if (!exists("agua") && !file.exists("../data/vector/agua.shp")) {
   agua <- mapedit::drawFeatures(map)
   agua$uso <- "água"
   sf::write_sf(agua, "../data/vector/agua.shp")
+} else {
+  agua <- sf::read_sf("../data/vector/agua.shp")
 }
 ```
 
 ```{r}
-uso_da_terra <- rbind(floresta, cidade, agricultura, agua)
-plot(uso_da_terra["uso"])
+uso_da_terra <- 
+  rbind(floresta, cidade, agricultura, agua) %>% 
+  dplyr::mutate(uso = as.factor(uso))
+plot(uso_da_terra["uso"], axes = TRUE, graticule = TRUE)
 ```
 
 ```{r}
@@ -112,3 +130,58 @@ uso_da_terra <-
   print()
 ```
 
+```{r}
+f <- uso ~ BAND1 + BAND2 + BAND3 + BAND4 + BAND5 + BAND6 + BAND7
+```
+
+```{r, fig.asp=1}
+fit_rpart <- rpart::rpart(f, data = uso_da_terra)
+plot(fit_rpart)
+text(fit_rpart, cex = 0.8)
+```
+
+```{r}
+fit_rpart2 <- 
+  caret::train(
+    f, data = uso_da_terra, 
+    method = "rpart", 
+    trControl = caret::trainControl(method = "LOOCV"), 
+    tuneGrid = data.frame(cp = 0.01)) %T>% 
+  print()
+```
+
+```{r}
+entropy <- 
+  function (x) {
+    x[x == 0] <- 1e-12
+    x <- x / sum(x)
+    -sum(x * log(x, base = length(x)))
+  }
+```
+
+```{r}
+newdata <- landsat %>% raster::crop(y = ext) %>% raster::getValues() %>% as.data.frame()
+pred <- predict(fit_rpart, newdata = newdata, type = "prob") %>% as.data.frame()
+pred$classe <- apply(pred, MARGIN = 1, nnet::which.is.max)
+pred$entropia <- apply(pred[, 1:4], MARGIN = 1, function (x) entropy(x))
+pred <- landsat %>% raster::crop(y = ext) %>% raster::setValues(as.matrix(pred))
+```
+
+```{r}
+blues <- colorRampPalette(c("aliceblue", "darkblue"))
+plot(pred[[1:4]], col = blues(10), breaks = seq(0, 1, by = 0.1))
+```
+
+```{r}
+pred[["classe"]] %>% 
+  fields::image.plot(breaks = 0:4, col = sp::bpy.colors(4), horizontal = TRUE,
+       axis.args = list(at = seq(0.5, 3.5, by = 1), labels = levels(uso_da_terra$uso)))
+```
+
+```{r}
+uncertainty.colors <- colorRampPalette(c("olivedrab", "khaki", "maroon1"))
+pred[["entropia"]] %>% 
+  plot(col = uncertainty.colors(10), breaks = seq(0, 1, by = 0.1))
+```
+
+# Bibliografia consultada
