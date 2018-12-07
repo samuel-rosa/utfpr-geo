@@ -43,6 +43,8 @@ if (file.size(files[6]) < 4000000) {
 }
 ```
 
+Carregar as imagens do Landsat.
+
 ```{r}
 files <- list.files("../data/raster/", pattern = ".tif$")
 files <- glue::glue("../data/raster/{files}")
@@ -68,6 +70,26 @@ raster::plotRGB(landsat, r = 3, g = 2, b = 1, ext = ext)
 library(landsat)
 ```
 
+Estimativa do nível de cinza do objeto escuro na imagem
+
+```{r tmp}
+ncoe <- 
+  landsat[[1]] %>% 
+  raster::values() %>% 
+  table() %T>% 
+  print()
+ncoe <- 
+  names(ncoe)[ncoe > 1000] %>%
+  as.numeric() %T>% 
+  print()
+ncoe <- 
+  ncoe[ncoe > 0] %>% 
+  min() %T>% 
+  print()
+```
+
+
+
 ```{r}
 # One approach to choosing a Starting Haze Value is to take the lowest DN value
 # with a frequency greater than some predetermined threshold, in this case 1000 pixels.
@@ -85,6 +107,67 @@ dos_param$shv <-
   unlist() %T>% 
   print()
 ```
+
+Parâmetros do método DOS
+
+```{r tmp}
+dos_param <- 
+  data.frame(
+    ncoe = ncoe,
+    gain = c(0.668706, 1.31702, 1.03988, 0.872588, 0.119882,
+             0.0652941),
+    bias = c(-1.52, -2.84, -1.17, -1.51, -0.37, -0.15),
+    edist = landsat::ESdist("1986-01-06"),
+    # https://earthexplorer.usgs.gov/
+    sunelev = 52.67848915, 
+    # https://landsat.usgs.gov/esun
+    Esun = c(1958, 1827, 1551, 1036, 214.9, 80.65)
+  ) %T>% 
+  print()
+```
+
+
+```{r tmp}
+dos <- 
+  landsat::DOS(
+    sat = 5,
+    SHV = 55, 
+    SHV.band = 1,
+    Grescale = dos_param$gain,
+    Brescale = dos_param$bias,
+    edist = dos_param$edist, 
+    sunelev = dos_param$sunelev)$DNfinal.mean %T>% 
+  print()
+```
+
+
+```{r tmp}
+dos_param$coef <- dos["coef-4"]
+```
+
+```{r tmp}
+landsat_dos <- 
+  parallel::mclapply(1:6, function (i) {
+    res <-
+      landsat[[i]] %>% 
+        as("SpatialGridDataFrame") %>% 
+      landsat::radiocorr(
+        Grescale = dos_param$gain[i],
+        Brescale = dos_param$bias[i], 
+        edist = dos_param$edist[i],
+        sunelev = dos_param$sunelev[i], 
+        Esun = dos_param$Esun[i],
+        Lhaze = dos_param$coef[i],
+        method = "DOS") %>% 
+      raster::raster()
+      values(res)[values(res) < 0] <- 0
+      res
+  }, mc.cores = 3) %>% 
+  raster::stack() %T>% 
+  print()
+```
+
+
 
 ```{r}
 dos_param$gain <- c(0.668706, 1.31702, 1.03988, 0.872588, 0.119882, 0.0551576, 0.0652941)
@@ -111,9 +194,15 @@ $>$ 115                         | Com muita bruma      | $\lambda$^-0,5^
 ```{r}
 dos <- 
   landsat::DOS(
-    sat = 5, SHV = 55, SHV.band = 1, Grescale = dos_param$gain[-6],
-    Brescale = dos_param$bias[-6], edist = dos_param$edist[-6], 
+    sat = 5,
+    SHV = 55, 
+    SHV.band = 1,
+    Grescale = dos_param$gain[-6],
+    Brescale = dos_param$bias[-6],
+    edist = dos_param$edist[-6], 
     sunelev = dos_param$sunelev[-6])$DNfinal.mean
+
+
 dos <- rbind(dos, dos[6, ])
 dos[6, ] <- NA_real_
 rownames(dos) <- glue::glue("band{1:7}")
