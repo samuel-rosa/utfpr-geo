@@ -74,7 +74,6 @@ landsat <-
 names(landsat) <- gsub("LANDSAT_5_TM_19860106_223_080_L2_", "", names(landsat))
 ```
 
-
 ```{r}
 ext <- raster::extent(c(229790, 238745, 6749875, 6758852))
 raster::plotRGB(landsat, r = 3, g = 2, b = 1, ext = ext, stretch = 'lin')
@@ -174,8 +173,15 @@ plot(pred[[1:4]], col = blues(10), breaks = seq(0, 1, by = 0.1))
 
 ```{r}
 pred[["classe"]] %>% 
-  fields::image.plot(breaks = 0:4, col = sp::bpy.colors(4), horizontal = TRUE,
-       axis.args = list(at = seq(0.5, 3.5, by = 1), labels = levels(uso_da_terra$uso)))
+  fields::image.plot(
+    breaks = 0:4, 
+    col = sp::bpy.colors(4), 
+    horizontal = TRUE,
+    axis.args = list(
+      at = seq(0.5, 3.5, by = 1), 
+      labels = levels(uso_da_terra$uso)
+    )
+  )
 ```
 
 ```{r}
